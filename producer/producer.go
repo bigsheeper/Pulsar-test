@@ -3,58 +3,79 @@ package producer
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/apache/pulsar-client-go/pulsar"
 )
 
-var client pulsar.Client
-var wg sync.WaitGroup
+const (
+	pulsarURL = "pulsar://localhost:6650"
+	topicName = "test-topic-xxx"
 
-func main() {
-	opts := pulsar.ClientOptions{URL: "pulsar://localhost:6650"}
-	var err error
-	client, err = pulsar.NewClient(opts)
-	if err != nil {
-		fmt.Printf("create client err %s", err)
-	}
-	wg = sync.WaitGroup{}
-	cnt := 5
-	wg.Add(cnt)
-	for i := 0; i < cnt; i++ {
-		go Produce(client, "input-api")
-	}
-	wg.Wait()
+	timeTick          = 200 * time.Millisecond
+	noiseDataSize     = 5 * 1024 // kb
+	noiseDataDuration = 100      // ms
+)
+
+func Run() {
+	client := newClient()
+	producer1 := newProducer(client)
+	producer2 := newProducer(client)
+	go produce(producer1)
+	produceNoise(producer2)
 }
 
-func Produce(client pulsar.Client, topic string) {
-	defer wg.Done()
-	opts := pulsar.ProducerOptions{Topic: topic}
+func newClient() pulsar.Client {
+	opts := pulsar.ClientOptions{URL: pulsarURL}
+	client, err := pulsar.NewClient(opts)
+	if err != nil {
+		panic(fmt.Errorf("create client err %s", err))
+	}
+	return client
+}
+
+func newProducer(client pulsar.Client) pulsar.Producer {
+	opts := pulsar.ProducerOptions{Topic: topicName}
 	producer, err := client.CreateProducer(opts)
 	if err != nil {
-		fmt.Printf("create producer err %s", err)
+		panic(fmt.Errorf("create producer err %s", err))
 	}
-	i := 0
-	timer := time.NewTimer(60 * time.Minute)
-	defer timer.Stop()
-	for {
-		str := "ahahahaha" + strconv.Itoa(i)
+	return producer
+}
 
-		msg := &pulsar.ProducerMessage{
-			Payload:    []byte(str),
-			Properties: map[string]string{},
-		}
+func produce(producer pulsar.Producer) {
+	ts := 0
+	ticker := time.NewTicker(timeTick)
+	for {
 		select {
-		case <-timer.C:
-			return
-		default:
+		case <-ticker.C:
+			_, err := producer.Send(context.Background(), &pulsar.ProducerMessage{
+				Payload:    []byte(strconv.Itoa(ts)),
+				Properties: map[string]string{},
+			})
+			if err != nil {
+				panic(fmt.Errorf("producer send error %s", err))
+			}
+			ts++
 		}
-		_, err = producer.Send(context.Background(), msg)
-		if err != nil {
-			fmt.Printf("producer send error %s", err)
+	}
+}
+
+func produceNoise(producer pulsar.Producer) {
+	bytes := make([]byte, noiseDataSize*1024)
+	rand.Read(bytes)
+	for {
+		select {
+		case <-time.After(time.Duration(rand.Int63n(noiseDataDuration)) * time.Millisecond):
+			_, err := producer.Send(context.Background(), &pulsar.ProducerMessage{
+				Payload:    bytes,
+				Properties: map[string]string{},
+			})
+			if err != nil {
+				panic(fmt.Errorf("producer send error %s", err))
+			}
 		}
-		i++
 	}
 }
